@@ -1,0 +1,365 @@
+import sys, time, random
+CW, CB = 0, 1
+PE, PP, PN, PB, PR, PQ, PK = 0, 1, 2, 3, 4, 5, 6
+V = {PE:0, PP:100, PN:325, PB:335, PR:500, PQ:900, PK:20000}
+PST = {
+    PP: [0,0,0,0,0,0,0,0, 50,50,50,50,50,50,50,50, 10,10,20,30,30,20,10,10, 5,5,10,25,25,10,5,5, 0,0,0,20,20,0,0,0, 5,-5,-10,0,0,-10,-5,5, 5,10,10,-20,-20,10,10,5, 0,0,0,0,0,0,0,0],
+    PN: [-50,-40,-30,-30,-30,-30,-40,-50, -40,-20,0,0,0,0,-20,-40, -30,0,10,15,15,10,0,-30, -30,5,15,20,20,15,5,-30, -30,0,15,20,20,15,0,-30, -30,5,10,15,15,10,5,-30, -40,-20,0,5,5,0,-20,-40, -50,-40,-30,-30,-30,-30,-40,-50],
+    PB: [-20,-10,-10,-10,-10,-10,-10,-20, -10,0,0,0,0,0,0,-10, -10,0,5,10,10,5,0,-10, -10,5,5,10,10,5,5,-10, -10,0,10,10,10,10,0,-10, -10,10,10,10,10,10,10,-10, -10,5,0,0,0,0,5,-10, -20,-10,-10,-10,-10,-10,-10,-20],
+    PR: [0,0,0,0,0,0,0,0, 5,10,10,10,10,10,10,5, -5,0,0,0,0,0,0,-5, -5,0,0,0,0,0,0,-5, -5,0,0,0,0,0,0,-5, -5,0,0,0,0,0,0,-5, -5,0,0,0,0,0,0,-5, 0,0,0,5,5,0,0,0],
+    PQ: [-20,-10,-10,-5,-5,-10,-10,-20, -10,0,0,0,0,0,0,-10, -10,0,5,5,5,5,0,-10, -5,0,5,5,5,5,0,-5, 0,0,5,5,5,5,0,-5, -10,5,5,5,5,5,0,-10, -10,0,5,0,0,0,0,-10, -20,-10,-10,-5,-5,-10,-10,-20],
+    PK: [-30,-40,-40,-50,-50,-40,-40,-30, -30,-40,-40,-50,-50,-40,-40,-30, -30,-40,-40,-50,-50,-40,-40,-30, -30,-40,-40,-50,-50,-40,-40,-30, -20,-30,-30,-40,-40,-30,-30,-20, -10,-20,-20,-20,-20,-20,-20,-10, 20,20,0,0,0,0,20,20, 20,30,10,0,0,10,30,20]
+}
+Z_P = [[[random.getrandbits(64) for _ in range(7)] for _ in range(2)] for _ in range(64)]
+Z_C, Z_CA, Z_E, Z_N_E = random.getrandbits(64), [random.getrandbits(64) for _ in range(16)], [random.getrandbits(64) for _ in range(64)], random.getrandbits(64)
+F_EX, F_AL, F_BE = 0, 1, 2
+INF = 30000
+
+class Board:
+    def __init__(self): self.reset()
+    def reset(self):
+        self.pieces = [PR,PN,PB,PQ,PK,PB,PN,PR]+[PP]*8+[PE]*32+[PP]*8+[PR,PN,PB,PQ,PK,PB,PN,PR]
+        self.colors = [CB]*16 + [None]*32 + [CW]*16
+        self.turn, self.castle_rights, self.ep_square, self.halfmove_clock, self.fullmove_number = CW, 15, None, 0, 1
+        self.zobrist_key = self.compute_zobrist()
+        self.history = [self.zobrist_key]
+        self.piece_squares = [{s for s in range(64) if self.colors[s]==c} for c in (CW, CB)]
+    def compute_zobrist(self):
+        k = sum(Z_P[s][self.colors[s]][self.pieces[s]] for s in range(64) if self.pieces[s]!=PE)
+        if self.turn==CB: k ^= Z_C
+        k ^= Z_CA[self.castle_rights]
+        return k ^ (Z_E[self.ep_square] if self.ep_square is not None else Z_N_E)
+    def generate_moves(self):
+        moves, us, them = [], self.turn, 1-self.turn
+        for sq in self.piece_squares[us]:
+            p = self.pieces[sq]; r, c = divmod(sq, 8)
+            if p == PP:
+                d = -8 if us==CW else 8; p_r = 0 if us==CW else 7
+                if 0 <= sq+d < 64 and self.pieces[sq+d]==PE:
+                    if (sq+d)//8 == p_r: moves.extend([(sq, sq+d, pr) for pr in (PQ,PR,PB,PN)])
+                    else:
+                        moves.append((sq, sq+d, None))
+                        if r == (6 if us==CW else 1) and self.pieces[sq+2*d]==PE: moves.append((sq, sq+2*d, None))
+                for dc in (-1, 1):
+                    if 0 <= c+dc < 8 and 0 <= sq+d+dc < 64:
+                        t = sq+d+dc
+                        if self.colors[t]==them:
+                            if t//8 == p_r: moves.extend([(sq, t, pr) for pr in (PQ,PR,PB,PN)])
+                            else: moves.append((sq, t, None))
+                        elif t == self.ep_square: moves.append((sq, t, None))
+            elif p == PN:
+                for o in (-17,-15,-10,-6,6,10,15,17):
+                    t = sq+o
+                    if 0 <= t < 64 and self.colors[t]!=us and abs((t//8)-r)+abs((t%8)-c)==3: moves.append((sq, t, None))
+            elif p in (PB, PR, PQ):
+                dirs = ([-9,-7,7,9] if p==PB else [-8,-1,1,8] if p==PR else [-9,-7,7,9,-8,-1,1,8])
+                for dr in dirs:
+                    curr = sq
+                    while True:
+                        cr, cc = divmod(curr, 8); curr += dr
+                        if not (0<=curr<64) or abs(cr-(curr//8))>1 or abs(cc-(curr%8))>1 or self.colors[curr]==us: break
+                        moves.append((sq, curr, None))
+                        if self.colors[curr]==them: break
+            elif p == PK:
+                for o in (-9,-8,-7,-1,1,7,8,9):
+                    t = sq+o
+                    if 0<=t<64 and self.colors[t]!=us and max(abs((t//8)-r), abs((t%8)-c))<=1: moves.append((sq, t, None))
+                if us==CW:
+                    if (self.castle_rights&1) and all(self.pieces[x]==PE for x in (61,62)) and not any(self.is_square_attacked(x, them) for x in (60,61,62)): moves.append((60, 62, None))
+                    if (self.castle_rights&2) and all(self.pieces[x]==PE for x in (57,58,59)) and not any(self.is_square_attacked(x, them) for x in (60,59,58)): moves.append((60, 58, None))
+                else:
+                    if (self.castle_rights&4) and all(self.pieces[x]==PE for x in (5,6)) and not any(self.is_square_attacked(x, them) for x in (4,5,6)): moves.append((4, 6, None))
+                    if (self.castle_rights&8) and all(self.pieces[x]==PE for x in (1,2,3)) and not any(self.is_square_attacked(x, them) for x in (4,3,2)): moves.append((4, 2, None))
+        real_moves = []
+        for m in moves:
+            st = self.make_move(m)
+            if not self.is_square_attacked(self.find_king(us), them): real_moves.append(m)
+            self.unmake_move(m, st)
+        return real_moves
+    def is_square_attacked(self, sq, by):
+        if sq is None or not (0<=sq<64): return False
+        r, c = divmod(sq, 8); p_d = 8 if by==CB else -8
+        for dc in (-1, 1):
+            t = sq-p_d+dc
+            if 0<=c+dc<8 and 0<=t<64 and self.pieces[t]==PP and self.colors[t]==by: return True
+        for o in (-17,-15,-10,-6,6,10,15,17):
+            t = sq+o
+            if 0<=t<64 and self.pieces[t]==PN and self.colors[t]==by and abs((t//8)-r)+abs((t%8)-c)==3: return True
+        for dr in (-9,-7,7,9,-8,-1,1,8):
+            curr = sq
+            while True:
+                cr, cc = divmod(curr, 8); curr += dr
+                if not (0<=curr<64) or abs(cr-(curr//8))>1 or abs(cc-(curr%8))>1: break
+                if self.pieces[curr]!=PE:
+                    if self.colors[curr]==by:
+                        diag = (dr in (-9,-7,7,9))
+                        if self.pieces[curr]==PQ or (diag and self.pieces[curr]==PB) or (not diag and self.pieces[curr]==PR): return True
+                    break
+        return False
+    def find_king(self, c): return next((s for s in self.piece_squares[c] if self.pieces[s]==PK), None)
+    def make_move(self, m):
+        f, t, pr = m; us, them = self.turn, 1-self.turn
+        st = (self.castle_rights, self.ep_square, self.halfmove_clock, self.pieces[t], self.colors[t], self.zobrist_key)
+        self.zobrist_key ^= Z_CA[self.castle_rights] ^ (Z_E[self.ep_square] if self.ep_square is not None else Z_N_E)
+        p, c, cap_p, cap_c = self.pieces[f], self.colors[f], self.pieces[t], self.colors[t]
+        self.zobrist_key ^= Z_P[f][c][p]
+        if cap_p!=PE: self.zobrist_key ^= Z_P[t][cap_c][cap_p]
+        self.halfmove_clock = 0 if (p==PP or cap_p!=PE) else self.halfmove_clock+1
+        self.pieces[f], self.colors[f] = PE, None
+        self.piece_squares[c].discard(f)
+        if cap_p!=PE: self.piece_squares[cap_c].discard(t)
+        if p==PP and t==self.ep_square:
+            ept = t+8 if c==CW else t-8
+            st = (self.castle_rights, self.ep_square, self.halfmove_clock, self.pieces[t], self.colors[t], self.zobrist_key, self.pieces[ept], self.colors[ept])
+            self.zobrist_key ^= Z_P[ept][self.colors[ept]][self.pieces[ept]]
+            self.piece_squares[self.colors[ept]].discard(ept)
+            self.pieces[ept], self.colors[ept] = PE, None
+        if pr: self.pieces[t], self.zobrist_key = pr, self.zobrist_key ^ Z_P[t][c][pr]
+        else: self.pieces[t], self.zobrist_key = p, self.zobrist_key ^ Z_P[t][c][p]
+        self.colors[t] = c; self.piece_squares[c].add(t)
+        if p==PK:
+            if c==CW:
+                if f==60 and t==62: self.pieces[63], self.colors[63], self.pieces[61], self.colors[61] = PE, None, PR, CW; self.piece_squares[CW].discard(63); self.piece_squares[CW].add(61)
+                elif f==60 and t==58: self.pieces[56], self.colors[56], self.pieces[59], self.colors[59] = PE, None, PR, CW; self.piece_squares[CW].discard(56); self.piece_squares[CW].add(59)
+                self.castle_rights &= ~3
+            else:
+                if f==4 and t==6: self.pieces[7], self.colors[7], self.pieces[5], self.colors[5] = PE, None, PR, CB; self.piece_squares[CB].discard(7); self.piece_squares[CB].add(5)
+                elif f==4 and t==2: self.pieces[0], self.colors[0], self.pieces[3], self.colors[3] = PE, None, PR, CB; self.piece_squares[CB].discard(0); self.piece_squares[CB].add(3)
+                self.castle_rights &= ~12
+        self.ep_square = (f+t)//2 if (p==PP and abs(f-t)==16) else None
+        for s, mask in ((56,~2),(63,~1),(0,~8),(7,~4)):
+            if f==s or t==s: self.castle_rights &= mask
+        if self.turn==CB: self.fullmove_number+=1
+        self.turn = them; self.zobrist_key ^= Z_C ^ Z_CA[self.castle_rights] ^ (Z_E[self.ep_square] if self.ep_square is not None else Z_N_E)
+        self.history.append(self.zobrist_key)
+        return st
+    def unmake_move(self, m, st):
+        self.history.pop(); f, t, pr = m; self.turn = 1-self.turn
+        if self.turn==CB: self.fullmove_number-=1
+        c = self.colors[t]; p = self.pieces[t] if not pr else PP
+        self.piece_squares[c].discard(t); self.pieces[f], self.colors[f] = p, c; self.piece_squares[c].add(f)
+        if p==PK:
+            if c==CW:
+                if f==60 and t==62: self.pieces[61], self.colors[61], self.pieces[63], self.colors[63] = PE, None, PR, CW; self.piece_squares[CW].discard(61); self.piece_squares[CW].add(63)
+                elif f==60 and t==58: self.pieces[59], self.colors[59], self.pieces[56], self.colors[56] = PE, None, PR, CW; self.piece_squares[CW].discard(59); self.piece_squares[CW].add(56)
+            else:
+                if f==4 and t==6: self.pieces[5], self.colors[5], self.pieces[7], self.colors[7] = PE, None, PR, CB; self.piece_squares[CB].discard(5); self.piece_squares[CB].add(7)
+                elif f==4 and t==2: self.pieces[3], self.colors[3], self.pieces[0], self.colors[0] = PE, None, PR, CB; self.piece_squares[CB].discard(3); self.piece_squares[CB].add(0)
+        if len(st)==8:
+            self.castle_rights, self.ep_square, self.halfmove_clock, self.pieces[t], self.colors[t], self.zobrist_key, epp, epc = st
+            ept = t+8 if c==CW else t-8; self.pieces[ept], self.colors[ept] = epp, epc; self.piece_squares[epc].add(ept)
+        else:
+            self.castle_rights, self.ep_square, self.halfmove_clock, self.pieces[t], self.colors[t], self.zobrist_key = st
+            if self.pieces[t]!=PE: self.piece_squares[self.colors[t]].add(t)
+    def is_draw(self):
+        if self.halfmove_clock>=100: return True
+        return len(self.history)>=4 and self.history.count(self.history[-1])>=3
+
+def evaluate(b):
+    sc = 0
+    for sq in range(64):
+        p = b.pieces[sq]
+        if p == PE: continue
+        c = b.colors[sq]
+        map_sq = sq if c==CB else 63-sq
+        val = V[p] + PST[p][map_sq]
+        if c==CW: sc += val
+        else: sc -= val
+    return sc if b.turn==CW else -sc
+
+class Engine:
+    def __init__(self):
+        self.tt = {}
+        self.killer_moves = [[None, None] for _ in range(128)]
+        self.history_moves = [[0]*64 for _ in range(64)]
+        self.nodes, self.start_time, self.allocated_time, self.time_up = 0, 0, 0, False
+        self.eval_history = [0] * 2048
+        self.countermove_history = [[None]*64 for _ in range(64)]
+        self.age = 0
+        
+    def static_exchange_eval(self, b, f, t):
+        return V[b.pieces[t]] - V[b.pieces[f]]
+
+    def order_moves(self, b, moves, d_lyr=0, tt_m=None, prev_m=None):
+        sc = []
+        cm_m = None
+        if prev_m:
+            pf, pt, _ = prev_m
+            cm_m = self.countermove_history[pf][pt]
+            
+        for m in moves:
+            if m == tt_m: s = 1000000
+            else:
+                f, t, pr = m; vic, att = b.pieces[t], b.pieces[f]
+                if vic != PE:
+                    s = 300000+(V[vic]*10)-V[att]
+                else:
+                    if m == cm_m: s = 250000
+                    elif d_lyr<128 and m == self.killer_moves[d_lyr][0]: s = 90000
+                    elif d_lyr<128 and m == self.killer_moves[d_lyr][1]: s = 80000
+                    else: s = min(self.history_moves[f][t], 50000)
+                if pr: s+=95000
+            sc.append((s, m))
+        sc.sort(key=lambda x: x[0], reverse=True)
+        return [x[1] for x in sc]
+
+    def qsearch(self, b, alpha, beta):
+        self.nodes += 1
+        if self.time_up or (self.allocated_time>0 and (self.nodes&511)==0 and (time.time()-self.start_time)*1000>self.allocated_time):
+            self.time_up = True; return alpha
+        sp = evaluate(b)
+        if sp >= beta: return beta
+        if alpha < sp: alpha = sp
+        moves = [m for m in b.generate_moves() if b.pieces[m[1]]!=PE]
+        for m in self.order_moves(b, moves):
+            if self.static_exchange_eval(b, m[0], m[1]) + alpha < 0: continue
+            st = b.make_move(m); score = -self.qsearch(b, -beta, -alpha); b.unmake_move(m, st)
+            if self.time_up: return alpha
+            if score >= beta: return beta
+            if score > alpha: alpha = score
+        return alpha
+
+    def search(self, b, depth, alpha, beta, d_lyr=0, do_null=True, prev_m=None):
+        self.nodes += 1
+        if self.time_up or (self.allocated_time>0 and (self.nodes&511)==0 and (time.time()-self.start_time)*1000>self.allocated_time):
+            self.time_up = True; return alpha, None
+        if b.is_draw(): return 0, None
+        
+        tt_key = b.zobrist_key & 0x7FFFFFFFFFFFFFFF
+        tt_e = self.tt.get(tt_key, None)
+        if tt_e and tt_e[1] >= depth:
+            flag, d, val, m, _ = tt_e
+            if flag==F_EX: return val, m
+            elif flag==F_AL and val<=alpha: return alpha, m
+            elif flag==F_BE and val>=beta: return beta, m
+            
+        in_c = b.is_square_attacked(b.find_king(b.turn), 1-b.turn)
+        if in_c: depth += 1
+        if depth <= 0: return self.qsearch(b, alpha, beta), None
+
+        static_eval = evaluate(b)
+        self.eval_history[b.fullmove_number % 2048] = static_eval
+        prev_eval = self.eval_history[(b.fullmove_number - 2) % 2048] if b.fullmove_number > 2 else 0
+        improving = static_eval > prev_eval
+
+        if depth <= 3 and not in_c:
+            margin = 120 * depth if improving else 200 * depth
+            if static_eval - margin >= beta: return beta, None
+
+        if do_null and depth>=3 and not in_c and any(b.pieces[s] not in (PP,PK) for s in b.piece_squares[b.turn]):
+            ep = b.ep_square; b.ep_square = None; b.turn = 1-b.turn; b.zobrist_key ^= Z_C ^ (Z_E[ep] if ep else Z_N_E) ^ Z_N_E
+            sc, _ = self.search(b, depth-3, -beta, -beta+1, d_lyr+1, False, None); sc = -sc
+            b.turn = 1-b.turn; b.ep_square = ep; b.zobrist_key ^= Z_C ^ (Z_E[ep] if ep else Z_N_E) ^ Z_N_E
+            if self.time_up: return alpha, None
+            if sc >= beta: return beta, None
+            
+        moves = b.generate_moves()
+        if not moves: return (-INF + d_lyr, None) if in_c else (0, None)
+        tt_m = tt_e[3] if tt_e else None; ordered = self.order_moves(b, moves, d_lyr, tt_m, prev_m)
+        best_m, best_v, pvs = ordered[0] if ordered else None, -INF, True
+        
+        for i, m in enumerate(ordered):
+            if depth <= 2 and i >= (8 if improving else 4) and b.pieces[m[1]] == PE and not in_c: continue
+            
+            st = b.make_move(m)
+            if pvs: 
+                val, _ = self.search(b, depth-1, -beta, -max(alpha, best_v), d_lyr+1, do_null, m)
+                val = -val; pvs = False
+            else:
+                lmr = 1 if (depth>=3 and i>=5 and b.pieces[m[1]]==PE and not b.is_square_attacked(b.find_king(b.turn), 1-b.turn)) else 0
+                if lmr > 0 and not improving: lmr += 1 
+                val, _ = self.search(b, depth-1-lmr, -max(alpha, best_v)-1, -max(alpha, best_v), d_lyr+1, do_null, m)
+                val = -val
+                if val>alpha and lmr>0: 
+                    val, _ = self.search(b, depth-1, -max(alpha, best_v)-1, -max(alpha, best_v), d_lyr+1, do_null, m)
+                    val = -val
+                if max(alpha, best_v)<val<beta: 
+                    val, _ = self.search(b, depth-1, -beta, -max(alpha, best_v), d_lyr+1, do_null, m)
+                    val = -val
+            b.unmake_move(m, st)
+            
+            if self.time_up: return alpha, None
+            if val > best_v: best_v, best_m = val, m
+            if val >= beta:
+                if b.pieces[m[1]]==PE and d_lyr<128:
+                    self.killer_moves[d_lyr][1] = self.killer_moves[d_lyr][0]
+                    self.killer_moves[d_lyr][0] = m
+                    self.history_moves[m[0]][m[1]] += depth*depth
+                    if prev_m:
+                        pf, pt, _ = prev_m
+                        self.countermove_history[pf][pt] = m
+                self.tt[tt_key] = (F_BE, depth, beta, best_m, self.age); return beta, best_m
+                
+        flg = F_EX if best_v > alpha else F_AL
+        if tt_key not in self.tt or depth >= self.tt[tt_key][1] or self.age > self.tt[tt_key][4]:
+            self.tt[tt_key] = (flg, depth, best_v, best_m, self.age)
+        return best_v, best_m
+
+def uci_to_move(b, s):
+    files, ranks = "abcdefgh", "87654321"
+    f = ranks.index(s[1])*8 + files.index(s[0])
+    t = ranks.index(s[3])*8 + files.index(s[2])
+    prm = {"q":PQ,"r":PR,"b":PB,"n":PN}[s[4]] if len(s)>4 else None
+    return (f, t, prm)
+
+def move_to_uci(m):
+    if not m: return "0000"
+    f, t, pr = m; files, ranks = "abcdefgh", "87654321"
+    return files[f%8]+ranks[f//8]+files[t%8]+ranks[t//8]+({PQ:"q",PR:"r",PB:"b",PN:"n"}[pr] if pr else "")
+
+def main():
+    b, e = Board(), Engine()
+    last_played_move = None
+    while True:
+        line = sys.stdin.readline()
+        if not line: break
+        cmd = line.strip()
+        if cmd == "uci": 
+            print("id name franfish1\nid author fran\nuciok", flush=True)
+        elif cmd == "isready": 
+            print("readyok", flush=True)
+        elif cmd == "ucinewgame":
+            b.reset()
+            e.tt.clear()
+            e.age = 0
+            last_played_move = None
+        elif cmd.startswith("position"):
+            parts = cmd.split()
+            last_played_move = None
+            if "startpos" in parts: b.reset()
+            if "moves" in parts:
+                for m_str in parts[parts.index("moves")+1:]: 
+                    last_played_move = uci_to_move(b, m_str)
+                    b.make_move(last_played_move)
+        elif cmd.startswith("go"):
+            e.age += 1
+            parts = cmd.split(); wtime = btime = winc = binc = 0
+            if "wtime" in parts: wtime = int(parts[parts.index("wtime")+1])
+            if "btime" in parts: btime = int(parts[parts.index("btime")+1])
+            if "winc" in parts: winc = int(parts[parts.index("winc")+1])
+            if "binc" in parts: binc = int(parts[parts.index("binc")+1])
+            my_t, my_i = (wtime, winc) if b.turn==CW else (btime, binc)
+            e.allocated_time = max(15, (my_t/30)+(my_i*0.6)-20) if my_t>0 else 0
+            e.start_time, e.time_up, best_m, last_sc = time.time(), False, None, 0
+            
+            for d in range(1, 15):
+                if d <= 2: alpha, beta = -INF, INF
+                else: alpha, beta = last_sc - 40, last_sc + 40
+                
+                val, m = e.search(b, d, alpha, beta, 0, True, last_played_move)
+                if e.time_up: break
+                
+                if val <= alpha or val >= beta:
+                    val, m = e.search(b, d, -INF, INF, 0, True, last_played_move)
+                    if e.time_up: break
+                    
+                if m: best_m, last_sc = m, val
+                el = (time.time()-e.start_time)*1000
+                print(f"info depth {d} score cp {last_sc} nodes {e.nodes} time {int(el)}", flush=True)
+            
+            lm = b.generate_moves()
+            if best_m not in lm: best_m = lm[0] if lm else None
+            print(f"bestmove {move_to_uci(best_m)}", flush=True)
+        elif cmd == "quit": break
+
+if __name__ == "__main__": main()
